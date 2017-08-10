@@ -1,4 +1,4 @@
-Title         : Angel调研及试用报告
+Title         : Angel调研及使用报告
 Author        : ryanyycao（曹洋毓）
 Css         : markdown3.css
 
@@ -7,8 +7,8 @@ Css         : markdown3.css
 # 综述
 
 &emsp;&emsp;Angel是一个基于参数服务器的高性能分布式机器学习平台，核心设计理念围绕机器学习模型，将高维度的大模型合理切分到多个参数服务器节点。
-Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新，
-自定义函数计算，以及同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
+Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新、
+自定义函数计算、同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
 Spark on Angel
 
 # 架构设计
@@ -41,7 +41,7 @@ Spark on Angel
   
   * SSP：允许一定程度的Task进度不一致，但这个不一致有一个上限
   
-  ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
+  * ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
 
 ## ps function(psf)
 
@@ -88,6 +88,7 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 
 * Angel默认的模型分区：将模型切分成大小相等的矩形区域。1）尽量将一个模型平均分配到所有PS节点上；2）对于非常小的模型，将它们尽量放在一个PS节点上；3）对于多行的模型，尽量将同一行放在一个PS节点上
 * 自定义模型分区：可以将模型横切或者模型纵切，也支持横切纵切都存在的更复杂的切片方式。设置自定义的Partitioner，实现两个接口getPartitions和assignPartToServer，最后将其将其注入到PSModel的MatrixContext之中即可使用
+
 ## 支持多种容错
 * PS容错采用了checkpoint的模式
 * 挂掉的Worker实例可以从Master处获取当前迭代轮数等状态信息，从PS处获取最新模型参数，然后重新开始被断掉的迭代
@@ -104,11 +105,12 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 而Angel使用Protobuf2.4会报很多方法没有实现的错误，需要修改很多底层源码，暂时来看在中心集群搭建分布式Angel不可行
 ~
 
-# 开发新算法过程
+# 实现新算法流程
 
 1. 定义一个模型，继承MLModel，里面定义参数模型及其他的一些配置
 2. 定义一个Task，继承自TrainTask，定义模型的训练过程，需要实现parse()和train()两个方法，分别为解析数据和训练
 3. 定义一个Runner，继承自MLRunner，用于将任务提交到集群，实现train()和predict()两个方法
+4. 对于需要复杂的模型切片和复杂的psf的算法，需要自定义模型切片方式和psf
 ~ Note
 之前准备基于Angel开发的Distributed Negative Sampling for Word Embeddings算法强依赖于ps-ps的psf，
 现在发现Angel并不支持这种ps到ps通信的特性，基于Angel只能实现简单的Word2Vec算法，暂时放弃这个方案
