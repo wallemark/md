@@ -1,48 +1,50 @@
 Title         : Angel调研及试用报告
 Author        : ryanyycao（曹洋毓）
+Css         : markdown3.css
 
 [TITLE]
 
 # 综述
 
-Angel是一个基于参数服务器的高性能分布式机器学习平台，核心设计理念围绕机器学习模型，将高维度的大模型合理切分到多个参数服务器节点。
+&emsp;&emsp;Angel是一个基于参数服务器的高性能分布式机器学习平台，核心设计理念围绕机器学习模型，将高维度的大模型合理切分到多个参数服务器节点。
 Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新，
-自定义函数计算，以及同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，支持
+自定义函数计算，以及同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
 Spark on Angel
 
 # 架构设计
-Angel中的各种角色：
+## Angel中的各种角色：
+
 
 * Client
-  : 控制任务运行，启动和停止Angel任务，加载和存储模型，启动具体计算过程和获取任务运行状态等
+  : &emsp;&emsp;控制任务运行，启动和停止Angel任务，加载和存储模型，启动具体计算过程和获取任务运行状态等
 * Master
-  : 原始计算数据以及参数矩阵的分片和分发，申请Worker和ParameterServer所需的计算资源，协调，管理和监控Worker以及ParameterServer
+  : &emsp;&emsp;原始计算数据以及参数矩阵的分片和分发，申请Worker和ParameterServer所需的计算资源，协调，管理和监控Worker以及ParameterServer
 * Parameter Server
-  : 负责存储和更新参数
+  : &emsp;&emsp;负责存储和更新参数
 * Worker
-  : 负责具体的模型训练或者结果预测，一个计算任务往往包含许多个Worker实例，每个Worker实例负责使用一部分训练数据进行训练
+  : &emsp;&emsp;负责具体的模型训练或者结果预测，一个计算任务往往包含许多个Worker实例，每个Worker实例负责使用一部分训练数据进行训练
 ![angel_architecture_1]
   
 
 [angel_architecture_1]: images/angel_architecture_1.png "angel_architecture_1" { width:auto; max-width:90% }
-Angel中的核心抽象：
+## Angel中的核心抽象：
 
 * PSModel（远程模型）
-  : PSModel是一个远程模型的概念，对于Client来说，它是一个类似模型代理的类。通过它你可以在每个Worker上，像操作本地对象一样去操作一个模型，而实际上你操作的是一个均匀切分在远程多个PSServer上的分布式模型切片，而且所有的操作都是透明并发的
+  : &emsp;&emsp;PSModel是一个远程模型的概念，对于Client来说，它是一个类似模型代理的类。通过它你可以在每个Worker上，像操作本地对象一样去操作一个模型，而实际上你操作的是一个均匀切分在远程多个PSServer上的分布式模型切片，而且所有的操作都是透明并发的
 * MLModel（模型集）
-  : 由一系列的PSModel（远程模型）构成，对这些模型进行统一操作
+  : &emsp;&emsp;由一系列的PSModel（远程模型）构成，对这些模型进行统一操作
 
 # 高级特性
 
-* 多种参数同步协议（通过向量时钟实现）
-  : BSP：在每一轮迭代中都需要等待所有的Task计算完成
-  : SSP：允许一定程度的Task进度不一致，但这个不一致有一个上限
-  : ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
+## 多种参数同步协议（通过向量时钟实现）
+  BSP：在每一轮迭代中都需要等待所有的Task计算完成
+  
+  SSP：允许一定程度的Task进度不一致，但这个不一致有一个上限
+  
+  ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
 
-* ps function(psf)
-  : 通过继承Angel提供的psf函数接口，可以实现自己的参数获取/更新逻辑，在不修改Angel自身代码的情况下定制自己想要的参数服务器的接口
-  : 
-
+## ps function(psf)
+  &emsp;&emsp;通过继承Angel提供的psf函数接口，可以实现自己的参数获取/更新逻辑，在不修改Angel自身代码的情况下定制自己想要的参数服务器的接口
 
   * 设计理念：实际应用中，各个算法对参数服务器上的参数获取和更新，远远不只pull()/push()这么简单，尤其是当算法需要实施一些特定的优化的时候。
   psf可以支持在ps端做一些简单的计算，从而在计算开销不变的情况下降低通信开销
@@ -67,20 +69,24 @@ Angel中的核心抽象：
   等待完成：等待所有请求完成后返回
   
 ~ Note
-无论是Get还是Update，具体的这3个阶段，其过程都是可以自定义的，从而实现千变万化的psFunc。
+无论是Get还是Update，具体的这三个阶段，其过程都是可以自定义的，从而实现千变万化的psFunc。
+~
+~ Note
+之前github相关文档中提到psf分为client-ps的psf和ps-ps的psf，后联系作者确认并没有ps-ps的psf，github文档有误。
 ~
 
 
 [angel_psFunc]: images/angel_psFunc.png "angel_psFunc" { width:auto; max-width:90% }
 
 
-* 自定义模型切片
-  : Angel默认的模型分区：将模型切分成大小相等的矩形区域。1）尽量将一个模型平均分配到所有PS节点上；2）对于非常小的模型，将它们尽量放在一个PS节点上；3）对于多行的模型，尽量将同一行放在一个PS节点上
-  : 也可以自定义的记的模型分区：设置自定义的Partitioner，实现两个接口getPartitions和assignPartToServer，最后将其将其注入到PSModel的MatrixContext之中即可使用
-* 支持多种容错
-  : PS容错采用了checkpoint的模式
-  : 挂掉的Worker实例可以从Master处获取当前迭代轮数等状态信息，从PS处获取最新模型参数，然后重新开始被断掉的迭代
-  : Master定期将任务状态写入hdfs，挂掉后Yarn会重新拉起一个Angel的Master，加载状态信息，重新启动Worker和PS，从断点处重新开始计算。
+## 自定义模型切片
+
+* Angel默认的模型分区：将模型切分成大小相等的矩形区域。1）尽量将一个模型平均分配到所有PS节点上；2）对于非常小的模型，将它们尽量放在一个PS节点上；3）对于多行的模型，尽量将同一行放在一个PS节点上
+* 自定义模型分区：设置自定义的Partitioner，实现两个接口getPartitions和assignPartToServer，最后将其将其注入到PSModel的MatrixContext之中即可使用
+## 支持多种容错
+* PS容错采用了checkpoint的模式
+* 挂掉的Worker实例可以从Master处获取当前迭代轮数等状态信息，从PS处获取最新模型参数，然后重新开始被断掉的迭代
+* Master定期将任务状态写入hdfs，挂掉后Yarn会重新拉起一个Angel的Master，加载状态信息，重新启动Worker和PS，从断点处重新开始计算。
 
 # Angel编译和运行
 
@@ -88,19 +94,28 @@ Angel中的核心抽象：
 * 源码下载：git clone https://github.com/Tencent/angel
 * 编译：mvn clean package -Dmaven.test.skip=true  发布包位于dist/target目录下
 * 运行时可以选择本地运行，或通过Yarn提交到集群运行
-
+~ Note
+由于Angel编译要求和Hadoop的Protobuf版本一致，中心集群Hadoop的Protobuf版本为2.4，
+而Angel使用Protobuf2.4会报很多方法没有实现的错误，需要修改很多底层源码，暂时来看在中心集群搭建分布式Angel不可行
+~
 
 # 开发新算法过程
 
 1. 定义一个模型，继承MLModel，里面定义参数模型及其他的一些配置
 2. 定义一个Task，继承自TrainTask，定义模型的训练过程，需要实现parse()和train()两个方法，分别为解析数据和训练
 3. 定义一个Runner，继承自MLRunner，用于将任务提交到集群，实现train()和predict()两个方法
+~ Note
+之前准备基于Angel开发的Distributed Negative Sampling for Word Embeddings算法强依赖于ps-ps的psf，
+现在发现Angel并不支持这种ps到ps通信的特性，基于Angel只能实现简单的Word2Vec算法，暂时放弃这个方案
+~
 
 # 总结
-通过默认的模型分区策略，和自定义的模型分区策略，Angel的模型分区上，在方便性和灵活性，做出了很好的平衡，为用户实现高效的复杂算法，打下了良好的基础。
+&emsp;&emsp;通过这次基于Angel的实践，大概摸索到了Angel的能力范围。Angel核心抽象为模型，特色为将模型分布于多台PS Server，然后提供一整套的psf来对远程模型进行操作。
+在支持了自定义模型分区策略、自定义client—ps的psf的高级特性之后，它的优势就很明显的体现了出来，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），安排
+通信内容，可以很明显的提升某些机器学习算法的性能。
 
-Angel实现了灵活多变的异步控制模式，为用户的算法，提供了最大化的便利，也解决了在大规模机器学习中，由于个别机器故障，引起严重的性能问题。
+&emsp;&emsp;通过默认的模型分区策略，和自定义的模型分区策略，Angel的模型分区上，在方便性和灵活性，做出了很好的平衡，为用户实现高效的复杂算法，打下了良好的基础。
 
-随着psFunc的引入，模型的计算，也会发生在PSServer端。PSServer也将有一定的模型计算职责，而不是单纯的模型存储功能。合理的设计psFunc，将大大的加速算法的运行。
+&emsp;&emsp;随着psFunc的引入，模型的计算，也会发生在PSServer端。PSServer也将有一定的模型计算职责，而不是单纯的模型存储功能。合理的设计psFunc，将大大的加速算法的运行。
 伴随着psFunc的引入和强化，在很多复杂的算法实现中，大大的降低了Worker要把模型完整的拖回来进行整体计算的可能性，从而曲线的实现了模型并行。
 
