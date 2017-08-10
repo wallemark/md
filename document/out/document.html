@@ -385,8 +385,8 @@
 <tbody><tr><td class="author column" style="text-align:center;line-adjust:0">
 <div class="authorname" style="font-size:large;line-adjust:0">ryanyycao（曹洋毓）</div></td></tr></tbody></table></div></div><h2 id="section" class="h1" data-heading-depth="1" style="display:block"><span class="heading-before"><span class="heading-label">1</span>.&#8194;</span>综述</h2>
 <p class="p noindent">&#8195;&#8195;Angel是一个基于参数服务器的高性能分布式机器学习平台，核心设计理念围绕机器学习模型，将高维度的大模型合理切分到多个参数服务器节点。
-Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新，
-自定义函数计算，以及同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
+Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新、
+自定义函数计算、同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
 Spark on Angel
 </p><h2 id="section" class="h1" data-heading-depth="1" style="display:block"><span class="heading-before"><span class="heading-label">2</span>.&#8194;</span>架构设计</h2><h3 id="sec-angel" class="h2" data-heading-depth="2" style="display:block"><span class="heading-before"><span class="heading-label">2.1</span>.&#8194;</span>Angel中的各种角色：</h3>
 <dl class="dl compact">
@@ -416,7 +416,8 @@ Spark on Angel
 </p></li>
 <li class="li ul-li list-star-li compact-li">
 <p>SSP：允许一定程度的Task进度不一致，但这个不一致有一个上限
-</p>ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
+</p></li>
+<li class="li ul-li list-star-li compact-li">ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
 </li></ul>
 <h3 id="sec-ps-functionpsf" class="h2" data-heading-depth="2" style="display:block"><span class="heading-before"><span class="heading-label">3.2</span>.&#8194;</span>ps function(psf)</h3>
 <ul class="ul list-star loose">
@@ -463,7 +464,9 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 <li class="li ul-li list-star-li compact-li">Angel默认的模型分区：将模型切分成大小相等的矩形区域。1）尽量将一个模型平均分配到所有PS节点上；2）对于非常小的模型，将它们尽量放在一个PS节点上；3）对于多行的模型，尽量将同一行放在一个PS节点上
 </li>
 <li class="li ul-li list-star-li compact-li">自定义模型分区：可以将模型横切或者模型纵切，也支持横切纵切都存在的更复杂的切片方式。设置自定义的Partitioner，实现两个接口getPartitions和assignPartToServer，最后将其将其注入到PSModel的MatrixContext之中即可使用
-<h3 id="section" class="h2" data-heading-depth="2" style="display:block"><span class="heading-before"><span class="heading-label">3.4</span>.&#8194;</span>支持多种容错</h3></li>
+</li></ul>
+<h3 id="section" class="h2" data-heading-depth="2" style="display:block"><span class="heading-before"><span class="heading-label">3.4</span>.&#8194;</span>支持多种容错</h3>
+<ul class="ul list-star compact">
 <li class="li ul-li list-star-li compact-li">PS容错采用了checkpoint的模式
 </li>
 <li class="li ul-li list-star-li compact-li">挂掉的Worker实例可以从Master处获取当前迭代轮数等状态信息，从PS处获取最新模型参数，然后重新开始被断掉的迭代
@@ -484,13 +487,15 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 <p class="p noindent"><span class="note-before"><strong class="strong-star2"><span class="note-caption">Note</span></strong>.
 </span>由于Angel编译要求和Hadoop的Protobuf版本一致，中心集群Hadoop的Protobuf版本为2.4，
 而Angel使用Protobuf2.4会报很多方法没有实现的错误，需要修改很多底层源码，暂时来看在中心集群搭建分布式Angel不可行</p></div></li></ul>
-<h2 id="section" class="h1" data-heading-depth="1" style="display:block"><span class="heading-before"><span class="heading-label">5</span>.&#8194;</span>开发新算法过程</h2>
+<h2 id="section" class="h1" data-heading-depth="1" style="display:block"><span class="heading-before"><span class="heading-label">5</span>.&#8194;</span>实现新算法流程</h2>
 <ol class="ol compact">
 <li class="li ol-li compact-li">定义一个模型，继承MLModel，里面定义参数模型及其他的一些配置
 </li>
 <li class="li ol-li compact-li">定义一个Task，继承自TrainTask，定义模型的训练过程，需要实现parse()和train()两个方法，分别为解析数据和训练
 </li>
 <li class="li ol-li compact-li">定义一个Runner，继承自MLRunner，用于将任务提交到集群，实现train()和predict()两个方法
+</li>
+<li class="li ol-li compact-li">对于需要复杂的模型切片和复杂的psf的算法，需要自定义模型切片方式和psf
 
 <div class="note" style="display:block">
 <p class="p noindent"><span class="note-before"><strong class="strong-star2"><span class="note-caption">Note</span></strong>.
@@ -500,7 +505,7 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 <p class="p noindent">&#8195;&#8195;通过这次基于Angel的实践，大概摸索到了Angel的能力范围。Angel核心抽象为模型，特色为将模型分布于多台PS Server，然后提供一整套的psf来对远程模型进行操作。
 在支持了自定义模型分区策略、自定义client-ps的psf的高级特性之后，它的优势就很明显的体现了出来。
 </p>
-<p class="p indent">&#8195;&#8195;对于基于ps的算法来说，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），降低通信量，可以明显的提升某些机器学习算法的性能（类似于之前实现的那种Word2Vec算法）。
+<p class="p indent">&#8195;&#8195;对于基于ps的算法来说，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），降低通信量，可以明显的提升某些机器学习算法的性能（类似于之前实现的Network-Efficient Distributed Word2vec Training System for Large Vocabularies算法）。
 </p>
 <p class="p indent">&#8195;&#8195;但是对于没有ps概念的算法来说，所有的节点之间需要进行通信，由于Angel不提供ps-ps的psf，因此没有办法完成ps间的交互，因此开发这类算法比较困难（类似于Distributed Negative Sampling for Word Embeddings算法）。
 </p><span data-line=""></span></div>

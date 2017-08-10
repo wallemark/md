@@ -120,7 +120,7 @@ PSServer也将有一定的模型计算职责，而不是单纯的模型存储功
 &emsp;&emsp;通过这次基于Angel的实践，大概摸索到了Angel的能力范围。Angel核心抽象为模型，特色为将模型分布于多台PS Server，然后提供一整套的psf来对远程模型进行操作。
 在支持了自定义模型分区策略、自定义client-ps的psf的高级特性之后，它的优势就很明显的体现了出来。
 
-&emsp;&emsp;对于基于ps的算法来说，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），降低通信量，可以明显的提升某些机器学习算法的性能（类似于之前实现的那种Word2Vec算法）。
+&emsp;&emsp;对于基于ps的算法来说，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），降低通信量，可以明显的提升某些机器学习算法的性能（类似于之前实现的Network-Efficient Distributed Word2vec Training System for Large Vocabularies算法）。
 
 &emsp;&emsp;但是对于没有ps概念的算法来说，所有的节点之间需要进行通信，由于Angel不提供ps-ps的psf，因此没有办法完成ps间的交互，因此开发这类算法比较困难（类似于Distributed Negative Sampling for Word Embeddings算法）。
 
