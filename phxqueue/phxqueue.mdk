@@ -1,0 +1,80 @@
+Title         : PhxQueue调研及测试报告
+Author        : ryanyycao（曹洋毓）
+Logo          : True
+Css         : markdown3.css
+
+[TITLE]
+
+# PhxQueue综述
+
+&emsp;&emsp;PhxQueue是一款基于Paxos协议实现的高可用、高吞吐、高可靠的分布式队列，保证At-Least-Once Delivery。
+
+&emsp;&emsp;PhxQueue支持的主要特性有同步刷盘，出入队严格有序，多订阅，出队限速，出队重放，所有模块均可平行扩展，存储层批量刷盘、同步，保证高吞吐，存储层支持同城多中心部署，存储层自动容灾/接入均衡，消费者自动容灾/负载均衡。
+
+# PhxQueue系统设计
+
+* 整体结构
+
+  ![此处输入图片的描述][1]
+
+* Store - 队列存储
+
+    &emsp;&emsp;Store 作为队列存储，引入了PhxPaxos库，以Paxos协议做副本同步，副本数为3，三副本状态强一致，免去了去重逻辑。只要多数派节点正常工作及互联，即可提供线性一致性读写服务。为了提高数据可靠性，同步刷盘作为默认开启特性，且性能不亚于异步刷盘。在可用性方面，Store 内有多个独立的 paxos group，每个 paxos group仅master提供读写服务，平时master动态均匀分布在Store内各节点，均衡接入压力，节点出灾时自动切换master到其它可用节点。
+    
+    &emsp;&emsp;Store使用状态机完成复制,各节点在状态机只保存索引，而不保存队列数据，需要读取队列数据时直接访问plog，这种特性可以在积压下让存储成本减半，同时写带宽减半。
+    
+    &emsp;&emsp;Store同步刷盘带来写放大，采用多 paxos group 部署 以及 Group Commit 的方式来同时解决同步刷盘的写放大问题以及Paxos吞吐问题。优势：业务层无需关注如何组织请求进行批量；在存储层以 paxos group 为单位的聚合效果比上层聚合效果更好。
+    
+
+* Producer - 生产者
+
+    &emsp;&emsp;Producer 作为消息生产者，根据key决定消息存储路由。相同key的消息默认路由到同一个队列中，保证出队顺序与入队顺序一致。
+
+* Consumer - 消费者
+
+    &emsp;&emsp;Consumer 作为消费者，以批量拉取的方式从Store拉消息，支持多协程方式批量处理消息。Consumer以服务框架的形式提供服务，使用者以实现回调的方式，根据不同主题（Topic），不同处理类（Handler）定义具体的消息处理逻辑。
+
+* Scheduler - 消费者管理器
+
+    &emsp;&emsp;Scheduler 的作用是, 对 Consumer 做容灾（通过心跳定义Consumer生死）和负载均衡（收集 Consumer 全局负载信息）。当使用者没有这方面的需求时，可以省略部署 Scheduler，此时各 Consumer 根据配置权重决定与队列的处理关系。
+    
+    &emsp;&emsp;负载均衡器采用master单点服务的模式, 自然实现强一致。master依赖分布式锁选举，master挂了可自行切换。在master的failover期间，仅消费者的自动容灾和负载均衡逻辑失效，出入队不受影响，也就是说整个队列系统不对负载均衡器强依赖。
+
+* Lock - 分布式锁
+
+    &emsp;&emsp; Lock 引入Paxos提供通用分布式锁服务，可以独立部署。在PhxQueue中的作用有两点，为 Scheduler 选举 leader，防止多个 Consumer 同时处理一条队列。
+
+# PhxQueue VS Kafka
+
+## 设计对比
+
+![{FD90E365-4C51-49C4-96D1-17300A604B0A}]
+
+[{FD90E365-4C51-49C4-96D1-17300A604B0A}]: images/-FD90E365-4C51-49C4-96D1-17300A604B0A-.png "{FD90E365-4C51-49C4-96D1-17300A604B0A}" { width:auto; max-width:90% }
+
+
+## 性能对比
+
+* 测试环境
+
+![{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}]
+
+[{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}]: images/-2709511A-3B33-40CE-A125-DDFAD9C0FF2F-.png "{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}" { width:auto; max-width:90% }
+
+* 测试基准及配置：
+* 测试结果：
+* 结论：PhxQueue的吞吐是Kafka的2.19倍
+
+## 存储层 failover 过程对比
+
+* Kafka：Failover 期间，在不同阶段程度不同，入队成功率在0% ~ 33%；Failover 持续时间由租约决定，租约时长默认10s。
+* PhxQueue：Failover 期间，入队成功率仅下降至66%；Failover 持续时间由租约决定，租约时长默认5s；开启 换队列重试特性（适合没有绝对顺序性要求的业务提高可用性）后，Failover 期间仍有90+%入队成功率。
+
+# 总结
+
+&emsp;&emsp;PhxQueue 在存储层做了很多的努力：实现了 master 自动切换，且仍然保证线性一致，切换期间仍然高可用；保证了同步刷盘的吞吐，其性能不亚于异步刷盘。另外实现了大部分队列实用特性，例如出入队顺序一致、多订阅、限速、消息重放等，适用于各种业务场景。
+
+
+  [1]: http://km.oa.com/files/photos/pictures/201709/1505466623_80_w633_h271.png
+  [2]: http://km.oa.com/files/photos/pictures/201709/1504843113_93_w503_h381.png
+  [3]: http://km.oa.com/files/photos/pictures/201709/1504843188_7_w453_h381.png
