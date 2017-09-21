@@ -1,126 +1,91 @@
-Title         : Angel调研及使用报告
+Title         : PhxQueue调研及试用报告
 Author        : ryanyycao（曹洋毓）
+Logo          : True
 Css         : markdown3.css
 
 [TITLE]
 
-# 综述
+# PhxQueue综述
 
-&emsp;&emsp;Angel是一个基于参数服务器的高性能分布式机器学习平台，核心设计理念围绕机器学习模型，将高维度的大模型合理切分到多个参数服务器节点。
-Angel的主要核心抽象是PSModel，它将对分布于多台PS Server上的远程模型操作透明化，通过PSModel，用户可以方便的进行模型的更新、
-自定义函数计算、同步控制，从而实现各种高效的机器学习算法。Angel基于Java和Scala进行开发，可以使用Yarn直接调度运行，并且支持
-Spark on Angel
+&emsp;&emsp;PhxQueue是一款基于Paxos协议实现的高可用、高吞吐、高可靠的分布式队列，保证At-Least-Once Delivery。
 
-# 架构设计
-## Angel中的各种角色：
+&emsp;&emsp;PhxQueue支持的主要特性有同步刷盘，出入队严格有序，多订阅，出队限速，出队重放，所有模块均可平行扩展，存储层批量刷盘、同步，保证高吞吐，存储层支持同城多中心部署，存储层自动容灾/接入均衡，消费者自动容灾/负载均衡。
 
+# PhxQueue系统设计
 
-* Client
-  : &emsp;&emsp;控制任务运行，启动和停止Angel任务，加载和存储模型，启动具体计算过程和获取任务运行状态等
-* Master
-  : &emsp;&emsp;原始计算数据以及参数矩阵的分片和分发，申请Worker和ParameterServer所需的计算资源，协调、管理和监控Worker以及ParameterServer
-* Parameter Server
-  : &emsp;&emsp;负责存储和更新参数
-* Worker
-  : &emsp;&emsp;负责具体的模型训练或者结果预测，一个计算任务往往包含许多个Worker实例，每个Worker实例负责使用一部分训练数据进行训练
-![angel_architecture_1]
-  
+* 整体结构
 
-[angel_architecture_1]: images/angel_architecture_1.png "angel_architecture_1" { width:auto; max-width:90% }
-## Angel中的核心抽象：
+  ![此处输入图片的描述][1]
 
-* PSModel
-  : &emsp;&emsp;PSModel是一个远程模型的概念，对于Client来说，它是一个类似模型代理的类。通过它你可以在每个Worker上，像操作本地对象一样去操作一个模型，而实际上你操作的是一个均匀切分在远程多个PSServer上的分布式模型切片，而且所有的操作都是透明并发的
-* MLModel
-  : &emsp;&emsp;由一系列的PSModel（远程模型）构成，对这些模型进行统一操作
+* Store - 队列存储
 
-# 高级特性
+    &emsp;&emsp;Store 作为队列存储，引入了PhxPaxos库，以Paxos协议做副本同步，副本数为3，三副本状态强一致，免去了去重逻辑。只要多数派节点正常工作及互联，即可提供线性一致性读写服务。为了提高数据可靠性，同步刷盘作为默认开启特性，且性能不亚于异步刷盘。在可用性方面，Store 内有多个独立的 paxos group，每个 paxos group仅master提供读写服务，平时master动态均匀分布在Store内各节点，均衡接入压力，节点出灾时自动切换master到其它可用节点。
+    
+    &emsp;&emsp;Store使用状态机完成复制。前端请求会转化成日志，我们称为plog，plog交由Paxos协议在底层对所有节点同步，Paxos协议保证所有plog有序地在所有节点重放。各节点在上层维护一致的状态机，由一致的plog作为输入触发状态转移，使得各节点状态一致。要基于Paxos实现队列的replica，状态机可以直观地设计为一个队列。因为队列这种模型不涉及数据修改，所以可以让入队数据作为plog。plog id的严格递增特性，令id可以方便地作为队列读写偏移。优化：plog as queue，即状态机只保存索引，而不保存队列数据，需要读取队列数据时直接访问plog。这样可以在积压下让存储成本减半，同时写带宽减半。
+![此处输入图片的描述][2]
+    &emsp;&emsp;Store同步刷盘带来写放大，Paxos同步需要一个RTT协商，三园区部署决定一个Paxos最高QPS只有250。优化：批量同步刷盘（group commit），采用多 paxos group 部署 以及 Group Commit 的方式来同时解决同步刷盘的写放大问题以及Paxos吞吐问题。优势：业务层无需关注如何组织请求进行批量；在存储层以 paxos group 为单位的聚合效果比上层聚合效果更好。
+    &emsp;&emsp;PhxPaxos 的工程实现方式分为三层：app 层负责处理业务请求，paxos 层执行 paxos同步过程，状态机层更新业务状态。
+其中，app 层发起 paxos 提议，paxos 层各节点通过 paxos 协议共同完成一个 paxos log 的确认，之后状态机以 paxos log 作为的输入作状态转移，更新业务的状态，最后返回状态转移结果给 app 层。一致的状态机层，加上来自 paxos 层的一致输入，就产生一致的状态转移，从而保证多个节点强一致。
+![此处输入图片的描述][3]
 
-## 多种参数同步协议（通过向量时钟实现）
-  * BSP：在每一轮迭代中都需要等待所有的Task计算完成
-  
-  * SSP：允许一定程度的Task进度不一致，但这个不一致有一个上限
-  
-  * ASP：Task之间完全不用相互等待，先完成的Task，继续下一轮的训练
+* Producer - 生产者
 
-## ps function(psf)
+    &emsp;&emsp;Producer 作为消息生产者，根据key决定消息存储路由。相同key的消息默认路由到同一个队列中，保证出队顺序与入队顺序一致。
 
-  * 设计理念
-  
-&emsp;&emsp;实际应用中，各个算法对参数服务器上的参数获取和更新，远远不只pull()/push()这么简单，尤其是当算法需要实施一些特定的优化的时候。psf可以支持在ps端做一些简单的计算，从而在计算开销不变的情况下降低通信开销。随着psFunc的引入，模型的计算，也会发生在PSServer端，
-PSServer也将有一定的模型计算职责，而不是单纯的模型存储功能。
+* Consumer - 消费者
 
-  &emsp;&emsp;我们可以通过继承Angel提供的psf函数接口来设计自己的参数获取更新逻辑，合理的设计psFunc，将大大的加速算法的运行。
-伴随着psFunc的引入和强化，在很多复杂的算法实现中，大大的降低了Worker要把模型完整的拖回来进行整体计算的可能性，从而提升算法效率。
+    &emsp;&emsp;Consumer 作为消费者，以批量拉取的方式从Store拉消息，支持多协程方式批量处理消息。Consumer以服务框架的形式提供服务，使用者以实现回调的方式，根据不同主题（Topic），不同处理类（Handler）定义具体的消息处理逻辑。
 
-  * 整体架构
-  
-![angel_psFunc]
-  
-  * GetFunc（参数获取）
-  
-  请求划分：操作的是整个模型参数，进行请求划分，生成一个请求列表，这个请求列表中，每一个请求都和一个模型参数分区对应
-  
-  请求发送：将请求列表中的所有请求，发送给模型参数分区所在的PSServer，PSServer以模型参数分区为单位执行参数获取和更新操作，并返回相应的结果
-  
-  请求合并：合并所有的模型分区级结果，得到最终的结果并返回
-  
-  * UpdateFunc（参数更新）
-  
-  请求划分：PSClient进行请求划分，生成一个请求列表，这个请求列表中的每一个请求都和一个模型参数分区对应
-  
-  请求发送：将请求列表中的所有请求发送给模型参数分区所在的PS实例，PS实例以模型参数分区为单位执行更新操作
-  
-  等待完成：等待所有请求完成后返回
-  
-~ Note
-无论是Get还是Update，具体的这三个阶段，其过程都是可以自定义的，从而实现千变万化的psFunc。
-~
-~ Note
-之前github相关文档中提到psf分为client-ps的psf和ps-ps的psf，后联系作者确认并没有ps-ps的psf，github文档有误。
-~
+* Scheduler - 消费者管理器
+
+    &emsp;&emsp;Scheduler 的作用是, 对 Consumer 做容灾（通过心跳定义Consumer生死）和负载均衡（收集 Consumer 全局负载信息）。当使用者没有这方面的需求时，可以省略部署 Scheduler，此时各 Consumer 根据配置权重决定与队列的处理关系。部署 Scheduler 后，Scheduler leader 与所有 Conusmer 维持心跳，在收集 Consumer 的负载信息的同时，反向调整 Consumer 与队列的处理关系。当 Scheduler leader 宕机了后，Scheduler 依赖下述分布式锁服务选举出新 leader，不可用期间仅影响 Consumer 的容灾和负载均衡，不影响 Consumer 的正常消费。
+    &emsp;&emsp;负载均衡器采用master单点服务的模式, 自然实现强一致。master依赖分布式锁选举，master挂了可自行切换。在master的failover期间，仅消费者的自动容灾和负载均衡逻辑失效，出入队不受影响，也就是说整个队列系统不对负载均衡器强依赖。
+
+* Lock - 分布式锁
+
+    &emsp;&emsp; Lock 引入Paxos提供通用分布式锁服务，可以独立部署。在PhxQueue中的作用有两点，为 Scheduler 选举 leader，防止多个 Consumer 同时处理一条队列。
+
+# PhxQueue VS Kafka
+
+## 设计对比
+
+特性 | Kafka | PhxQueue | 备注
+---- | ----| ---- | ----
+水平扩展最小粒度 | Partition | Queue | 
+物理文件存储粒度 | Partition | Paxos group | PhxQueue 有意区分 queue 和 paxos group 的概念。一个 queue 只属于一个 paxos group，一个 paxos group 内可包含多个 queue，从而避免逻辑水平扩展影响写盘并发
+刷盘方式 |异步为主，支持同步（但是会出现写放大降低吞吐量) | 同步刷盘
+存储层选举 | Broker 依赖 Zookeeper 选举出 Controller，再由 Controller 选举出各分区的 leader | Store 自身依赖 Paxos 选举 master | Kafka Broker 引入 Controller 解决了 Zookeeper 压力大的问题；PhxQueue Store 不依赖外部选举，每一组均能独立进行 Paxos 决议，分散了选举压力
+批量生产能力 | 仅 Producer 有 batch 逻辑 | Producer、Store 均有独立的 batch 逻辑 | PhxQueue 为了应对高扇入场景下 Producer 端 batch 效果不好的情况，在 Store 中加入了 batch 逻辑
+同步延迟 | 全同步协议，所有 ISR 返回 ack 后完成同步，延迟取决于最慢节点 | Paxos 协议，多数派 accept 即完成同步，最慢节点不影响整体吞吐 | PhxQueue 只需多数派应答即可完成同步，Kafka 同步需要等待最慢节点
+存储层的组间容灾隔离 | 无 | 有 | 写入，所以单节点离线造成的失败，可以在组内换节点重试成功；对于 Kafka，单节点离线会造成整组暂时不可写，重试逻辑需要换组进行，相当于一个组的请求转移到了别的组，有可能压垮别的组，牺牲了组间容灾隔离
+存储层的服务发现 | 通过 Metadata RPC 获取存储层信息 | 通过本地配置文件获取存储层信息 | PhxQueue 通过配置文件做服务发现，使用者需维护各机器配置的一致性；Kafka 以 Zookeeper 作为配置管理中心，为了避免性能下降及提高稳定性，没有直接将 Zookeeper 暴露给使用方，而是使用 RPC 的方式返回信息
+消费隔离 | 以消费分组（Consumer Group）为单位 | 以订阅（Sub）为单位 
+消费管理 | 由 Coordinator 对每个 Consumer Group 选举出一个 Consumer 作为 leader，决定该 Consumer Group 内的队列分配 | 各 Consumer 与 Schduler 维持心跳并上报负载，Schduler 根据负载调整各 Consumer 的消费权重，Consumer 再根据消费权重决定要处理的队列 | 为了适应混合部署的场景，PhxQueue 新增了负载均衡功能，当某 Consumer 负载过高时，可自动调整分配；Kafka并无该功能
 
 
-[angel_psFunc]: images/angel_psFunc.png "angel_psFunc" { width:auto; max-width:90% }
+## 性能对比
 
+* 测试环境
 
-## 自定义模型切片
+    cpu | 48 * Intel(R) Xeon(R) CPU E5-2670 v3 @ 2.30GHz
+    ---- | ----
+    memory | 128G
+    network | 10 Gigabit Ethernet
+    cluster nodes | 3
+* 测试基准及配置：
+* 测试结果：
+* 结论：PhxQueue的吞吐是Kafka的2.19倍
 
-* Angel默认的模型分区：将模型切分成大小相等的矩形区域。1）尽量将一个模型平均分配到所有PS节点上；2）对于非常小的模型，将它们尽量放在一个PS节点上；3）对于多行的模型，尽量将同一行放在一个PS节点上
-* 自定义模型分区：可以将模型横切或者模型纵切，也支持横切纵切都存在的更复杂的切片方式。设置自定义的Partitioner，实现两个接口getPartitions和assignPartToServer，最后将其将其注入到PSModel的MatrixContext之中即可使用
+## 存储层 failover 过程对比
 
-## 支持多种容错
-* PS容错采用了checkpoint的模式
-* 挂掉的Worker实例可以从Master处获取当前迭代轮数等状态信息，从PS处获取最新模型参数，然后重新开始被断掉的迭代
-* Master定期将任务状态写入hdfs，挂掉后Yarn会重新拉起一个Angel的Master，加载状态信息，重新启动Worker和PS，从断点处重新开始计算。
-
-# Angel编译和运行
-
-* 环境要求：Jdk >= 1.8 Maven >= 3.0.5 Protobuf >= 2.5.0且和Hadoop的Protobuf版本一致
-* 源码下载：git clone https://github.com/Tencent/angel
-* 编译：mvn clean package -Dmaven.test.skip=true  发布包位于dist/target目录下
-* 运行时可以选择本地运行，或通过Yarn提交到集群运行
-~ Note
-由于Angel编译要求和Hadoop的Protobuf版本一致，中心集群Hadoop的Protobuf版本为2.4，
-而Angel使用Protobuf2.4会报很多方法没有实现的错误，需要修改很多底层源码，暂时来看在中心集群搭建分布式Angel不可行
-~
-
-# 实现新算法流程
-
-1. 定义一个模型，继承MLModel，里面定义参数模型及其他的一些配置
-2. 定义一个Task，继承自TrainTask，定义模型的训练过程，需要实现parse()和train()两个方法，分别为解析数据和训练
-3. 定义一个Runner，继承自MLRunner，用于将任务提交到集群，实现train()和predict()两个方法
-4. 对于需要复杂的模型切片和复杂的psf的算法，需要自定义模型切片方式和psf
-~ Note
-之前准备基于Angel开发的Distributed Negative Sampling for Word Embeddings算法强依赖于ps-ps的psf，
-现在发现Angel并不支持这种ps到ps通信的特性，基于Angel只能实现简单的Word2Vec算法，暂时放弃这个方案
-~
+    &emsp;&emsp;Kafka：Failover 期间，在不同阶段程度不同，入队成功率在0% ~ 33%；Failover 持续时间由租约决定，租约时长默认10s。
+    &emsp;&emsp;PhxQueue：Failover 期间，入队成功率仅下降至66%；Failover 持续时间由租约决定，租约时长默认5s；开启 换队列重试特性（适合没有绝对顺序性要求的业务提高可用性）后，Failover 期间仍有90+%入队成功率。
 
 # 总结
-&emsp;&emsp;通过这次基于Angel的实践，大概摸索到了Angel的能力范围。Angel核心抽象为模型，特色为将模型分布于多台PS Server，然后提供一整套的psf来对远程模型进行操作。
-在支持了自定义模型分区策略、自定义client-ps的psf的高级特性之后，它的优势就很明显的体现了出来。
 
-&emsp;&emsp;对于基于ps的算法来说，这两个特性可以很好的安排模型的分布，安排计算的位置（client or ps），降低通信量，可以明显的提升某些机器学习算法的性能（类似于之前实现的Network-Efficient Distributed Word2vec Training System for Large Vocabularies算法）。
+&emsp;&emsp;PhxQueue 在存储层做了很多的努力：实现了 master 自动切换，且仍然保证线性一致，切换期间仍然高可用；保证了同步刷盘的吞吐，其性能不亚于异步刷盘。另外实现了大部分队列实用特性，例如出入队顺序一致、多订阅、限速、消息重放等，适用于各种业务场景。
 
-&emsp;&emsp;但是对于没有ps概念的算法来说，所有的节点之间需要进行通信，由于Angel不提供ps-ps的psf，因此没有办法完成ps间的交互，因此开发这类算法比较困难（类似于Distributed Negative Sampling for Word Embeddings算法）。
 
+  [1]: http://km.oa.com/files/photos/pictures/201709/1505466623_80_w633_h271.png
+  [2]: http://km.oa.com/files/photos/pictures/201709/1504843113_93_w503_h381.png
+  [3]: http://km.oa.com/files/photos/pictures/201709/1504843188_7_w453_h381.png
