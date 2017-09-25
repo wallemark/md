@@ -9,15 +9,18 @@ Css         : markdown3.css
 
 &emsp;&emsp;PhxQueue是一款基于Paxos协议实现的高可用、高吞吐、高可靠的分布式队列，保证At-Least-Once Delivery。
 
-&emsp;&emsp;PhxQueue支持的主要特性有同步刷盘，出入队严格有序，多订阅，出队限速，出队重放，所有模块均可平行扩展，存储层批量刷盘、同步，保证高吞吐，存储层支持同城多中心部署，存储层自动容灾/接入均衡，消费者自动容灾/负载均衡。
+&emsp;&emsp;PhxQueue支持的主要特性有同步刷盘，出入队严格有序，多订阅，出队限速，出队重放，所有模块均可平行扩展，存储层批量刷盘、同步，保证高吞吐，存储层支持同城多中心部署，存储层自动容灾/接入均衡，消费者自动容灾/负载均衡等。
 
 # PhxQueue系统设计
 
-* 整体结构
+* **整体结构**
 
-  ![此处输入图片的描述][1]
+![1505466623_80_w633_h271]
 
-* Store - 队列存储
+[1505466623_80_w633_h271]: images/1505466623_80_w633_h271.png "1505466623_80_w633_h271" { width:auto; max-width:90% }
+
+
+* **Store - 队列存储**
 
     &emsp;&emsp;Store 作为队列存储，引入了PhxPaxos库，以Paxos协议做副本同步，副本数为3，三副本状态强一致，免去了去重逻辑。只要多数派节点正常工作及互联，即可提供线性一致性读写服务。为了提高数据可靠性，同步刷盘作为默认开启特性，且性能不亚于异步刷盘。在可用性方面，Store 内有多个独立的 paxos group，每个 paxos group仅master提供读写服务，平时master动态均匀分布在Store内各节点，均衡接入压力，节点出灾时自动切换master到其它可用节点。
     
@@ -26,21 +29,21 @@ Css         : markdown3.css
     &emsp;&emsp;Store同步刷盘带来写放大，采用多 paxos group 部署 以及 Group Commit 的方式来同时解决同步刷盘的写放大问题以及Paxos吞吐问题。优势：业务层无需关注如何组织请求进行批量；在存储层以 paxos group 为单位的聚合效果比上层聚合效果更好。
     
 
-* Producer - 生产者
+* **Producer - 生产者**
 
     &emsp;&emsp;Producer 作为消息生产者，根据key决定消息存储路由。相同key的消息默认路由到同一个队列中，保证出队顺序与入队顺序一致。
 
-* Consumer - 消费者
+* **Consumer - 消费者**
 
     &emsp;&emsp;Consumer 作为消费者，以批量拉取的方式从Store拉消息，支持多协程方式批量处理消息。Consumer以服务框架的形式提供服务，使用者以实现回调的方式，根据不同主题（Topic），不同处理类（Handler）定义具体的消息处理逻辑。
 
-* Scheduler - 消费者管理器
+* **Scheduler - 消费者管理器**
 
     &emsp;&emsp;Scheduler 的作用是, 对 Consumer 做容灾（通过心跳定义Consumer生死）和负载均衡（收集 Consumer 全局负载信息）。当使用者没有这方面的需求时，可以省略部署 Scheduler，此时各 Consumer 根据配置权重决定与队列的处理关系。
     
     &emsp;&emsp;负载均衡器采用master单点服务的模式, 自然实现强一致。master依赖分布式锁选举，master挂了可自行切换。在master的failover期间，仅消费者的自动容灾和负载均衡逻辑失效，出入队不受影响，也就是说整个队列系统不对负载均衡器强依赖。
 
-* Lock - 分布式锁
+* **Lock - 分布式锁**
 
     &emsp;&emsp; Lock 引入Paxos提供通用分布式锁服务，可以独立部署。在PhxQueue中的作用有两点，为 Scheduler 选举 leader，防止多个 Consumer 同时处理一条队列。
 
@@ -48,33 +51,50 @@ Css         : markdown3.css
 
 ## 设计对比
 
-![{FD90E365-4C51-49C4-96D1-17300A604B0A}]
+![{96D645D6-2667-48C2-AE3E-4102FEB3EC8D}]
 
-[{FD90E365-4C51-49C4-96D1-17300A604B0A}]: images/-FD90E365-4C51-49C4-96D1-17300A604B0A-.png "{FD90E365-4C51-49C4-96D1-17300A604B0A}" { width:auto; max-width:90% }
+[{96D645D6-2667-48C2-AE3E-4102FEB3EC8D}]: images/-96D645D6-2667-48C2-AE3E-4102FEB3EC8D-.png "{96D645D6-2667-48C2-AE3E-4102FEB3EC8D}" { width:auto; max-width:90% }
+
 
 
 ## 性能对比
 
-* 测试环境
+* **测试环境**：b70*3
 
 ![{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}]
 
 [{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}]: images/-2709511A-3B33-40CE-A125-DDFAD9C0FF2F-.png "{2709511A-3B33-40CE-A125-DDFAD9C0FF2F}" { width:auto; max-width:90% }
 
-* 测试基准及配置：
-* 测试结果：
-* 结论：PhxQueue的吞吐是Kafka的2.19倍
+* **测试结果**：默认的kafka配置，qps为13万/秒，平均延迟为230ms；PhxQueue吞吐远低于kafka，qps取决于磁盘IOPS。  
+（原因：由于kafka在写盘时用到了Memory Mapped Files技术，这种技术支持内存映射文件，所以在写盘时其实是写入内存，之后再批量写入硬盘，省去了磁盘读写的时间；而由于PhxQueue没有做wal，所以其每次存储都得单独执行一次磁盘存储，试验采用的是sata磁盘机器，严重影响了qps，想要压测出PhxQueue的极限吞吐需要使用ssd的机器。官方给出ssd下PhxQueue吞吐还要略高于Kafka）
+
+* **结论**：在sata磁盘环境下，kafka吞吐远超PhxQueue，但是PhxQueue设计的优势在于其在高扇入同步刷盘场景下的使用，可靠性更强，在使用ssd以后吞吐和kafka不相上下（官方数据）。对于压测瓶颈，若使用ssd，PhxQueue 瓶颈在 cpu，大概在70%，若使用sata，PhxQueue 瓶颈在磁盘读写，Kafka 瓶颈通常都在磁盘读写。
 
 ## 存储层 failover 过程对比
 
-* Kafka：Failover 期间，在不同阶段程度不同，入队成功率在0% ~ 33%；Failover 持续时间由租约决定，租约时长默认10s。
-* PhxQueue：Failover 期间，入队成功率仅下降至66%；Failover 持续时间由租约决定，租约时长默认5s；开启 换队列重试特性（适合没有绝对顺序性要求的业务提高可用性）后，Failover 期间仍有90+%入队成功率。
+* **Kafka**：Failover 期间，在不同阶段程度不同，入队成功率在0% ~ 33%；Failover 持续时间由租约决定，租约时长默认10s。
+* **PhxQueue**：Failover 期间，入队成功率仅下降至66%；Failover 持续时间由租约决定，租约时长默认5s；开启换队列重试特性（适合没有绝对顺序性要求的业务提高可用性）后，Failover 期间仍有90+%入队成功率。
+
+## API
+
+* **Kafka**：主要包括五种API：  
+
+  **Producer API**：允许应用程序将数据流发送的集群中的topics  
+  **Consumer API**：允许应用程序从集群的topics中读出数据流  
+  **Streams API**：允许将数据流从input topics传输到output topics  
+  **Connect API**：允许实现一些连接器，可以连续的从其他源系统或者应用程序拉取数据到kafka，或者将kafka数据图推送到其他系统或应用程序  
+  **AdminClient API**：允许管理和检查topics，brokers和一些其他的kafka组件  
+
+* **Phxqueue**：bg内部有搭好的云服务，可以直接从运维系统接入，不需要管理，主要包括三种API：  
+
+  **发布者**：使用svrkit协议，运维分配一个evcpubid，每套事件中心有独立的Api, 调用方式一致，只是类名不一样，具体接入时提供，调用Public接口发布消息，事务调用Commit/RollBack接口来确认发送或者回退消息  
+  **订阅者**：可以使用http协议（普通的httpsvr和logicsvr）或svrkit协议  
+  **反查**：可以使用http协议（普通的httpsvr和logicsvr）或svrkit协议  
+
 
 # 总结
 
-&emsp;&emsp;PhxQueue 在存储层做了很多的努力：实现了 master 自动切换，且仍然保证线性一致，切换期间仍然高可用；保证了同步刷盘的吞吐，其性能不亚于异步刷盘。另外实现了大部分队列实用特性，例如出入队顺序一致、多订阅、限速、消息重放等，适用于各种业务场景。
 
+&emsp;&emsp;PhxQueue 是一款基于Paxos协议实现的高可用、高吞吐、高可靠的分布式队列，并且做了很多的优化：支持同步刷盘，保证了同步刷盘的吞吐，其性能不亚于异步刷盘；在Store端做了batch逻辑，解决了高扇入场景Producer端batch效果不好的问题，解决了写放大的问题；同步延迟只需多数派应答，响应更快；做了负载均衡的特性，自动调整Consumer负载；稳定性更强，在节点失效时成功率影响不大。更加适用于不能做batch，需要同步刷盘，保证可靠性的业务场景。
 
-  [1]: http://km.oa.com/files/photos/pictures/201709/1505466623_80_w633_h271.png
-  [2]: http://km.oa.com/files/photos/pictures/201709/1504843113_93_w503_h381.png
-  [3]: http://km.oa.com/files/photos/pictures/201709/1504843188_7_w453_h381.png
+&emsp;&emsp;Kafka 设计的目标则是高吞吐量、低延迟的消息系统，将消息作为文件来处理，无论是写入数据和写出数据吞吐量都很大，更适用于不要求同步刷盘的应用场景。
